@@ -1,0 +1,178 @@
+---
+
+# fail if it's not a Debian based system
+# this expects to run on a Raspberry Pi running Raspbian
+- name: Check OS (raspbee)
+  fail:
+    msg: "Not a Debian based system!"
+  when: ansible_distribution != 'Debian'
+
+
+- name: Install build packages
+  apt:
+    name:
+      - i2c-tools
+      - build-essential
+      - raspberrypi-kernel-headers
+      - curl
+    state: present
+
+
+# use the current kernel version to determine if the module is installed
+- name: Check if RTC kernel module is installed
+  stat:
+    path: "/lib/modules/{{ ansible_kernel }}/extra/rtc-pcf85063.ko"
+    get_attributes: no
+    get_checksum: no
+    get_mime: no
+  register: kernel_module
+
+
+# build the module if it is not installed
+- block:
+  - name: Download master.zip
+    get_url:
+      url: https://github.com/dresden-elektronik/raspbee2-rtc/archive/master.zip
+      dest: /home/pi/master.zip
+      owner: pi
+      group: pi
+      mode: 0440
+    register: download_master
+
+
+  - name: Unpack master.zip
+    unarchive:
+      src: /home/pi/master.zip
+      dest: /home/pi
+      remote_src: yes
+      owner: pi
+      group: pi
+      mode: 0770
+      creates: /home/pi/raspbee2-rtc-master
+
+
+  - name: Build kernel module
+    shell: cd /home/pi/raspbee2-rtc-master && make
+    become: true
+    become_user: pi
+
+
+  - name: Install kernel module
+    shell: cd /home/pi/raspbee2-rtc-master && make install
+    become: true
+    become_user: root
+    notify:
+      - restart Pi
+
+  when: kernel_module.stat.exists != True
+
+
+- name: Remove source file for kernel module
+  file:
+    path: /home/pi/master.zip
+    state: absent
+  when: raspbee_remove_source == True
+
+
+- name: Remove build files for kernel module
+  file:
+    path: /home/pi/raspbee2-rtc-master
+    state: absent
+  when: raspbee_remove_build == True
+
+
+#- name: Update service status
+#  service_facts:
+
+#- debug:
+#    var: ansible_facts.services
+
+#        "rtc-pcf85063.service": {
+#            "name": "rtc-pcf85063.service",
+#            "source": "systemd",
+#            "state": "stopped",
+#            "status": "enabled"
+#        },
+
+#- debug:
+#    msg: "{{ ansible_facts.services['rtc-pcf85063.service'] }}"
+
+
+# raspi-config does not report back if anything was changed
+# figure out if any change is needed
+- name: Retrieve /boot/cmdline.txt
+  slurp:
+    src: "/boot/cmdline.txt"
+  register: boot_cmdline_txt_retrieve
+
+
+- name: Exctract /boot/cmdline.txt
+  set_fact:
+    boot_cmdline_txt: "{{ boot_cmdline_txt_retrieve.content | b64decode }}"
+
+
+- block:
+  - name: Enable hardware serial port
+    # "2" will disable the login on the serial port,
+    # but will enable the port itself
+    shell: raspi-config nonint do_serial 2
+    notify:
+      - restart Pi
+
+  when: boot_cmdline_txt is search("console=serial0") or boot_cmdline_txt is search("console=console=ttyAMA0")
+
+
+# force reboot here, if necessary
+# both the kernel module and the serial port change
+# might need a reboot
+- meta: flush_handlers
+
+
+# add repository for deCONZ
+- name: Add deCONZ apt key
+  apt_key:
+    url: https://phoscon.de/apt/deconz.pub.key
+    state: present
+
+
+- name: Add deCONZ repository
+  apt_repository:
+    repo: "deb https://phoscon.de/apt/deconz {{ ansible_distribution_release }} main"
+    state: present
+    filename: deconz
+  register: deconz_repository
+
+
+# update package cache - required for any new software installation
+- name: Update apt cache
+  apt:
+    update_cache: yes
+  changed_when: false
+  when: deconz_repository.changed
+
+
+- name: Install deCONZ packages
+  apt:
+    name:
+      - deconz
+      - libsqlite3-dev
+    state: present
+
+
+# disable GUI tool
+- name: Stop deconz-gui
+  systemd:
+    name: deconz-gui
+    state: stopped
+    enabled: no
+
+
+# enable headless service
+- name: Start deconz
+  systemd:
+    name: deconz
+    state: started
+    enabled: yes
+
+
+- meta: flush_handlers

@@ -1,0 +1,7 @@
+---
+
+- name: restart Pi
+  shell: ( /bin/sleep 5 ; shutdown -r now "Ansible triggered" ) &
+  async: 30
+  poll: 0
+  ignore_errors: true
