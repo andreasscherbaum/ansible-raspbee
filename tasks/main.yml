@@ -106,7 +106,7 @@
   register: boot_cmdline_txt_retrieve
 
 
-- name: Exctract /boot/cmdline.txt
+- name: Extract /boot/cmdline.txt
   set_fact:
     boot_cmdline_txt: "{{ boot_cmdline_txt_retrieve.content | b64decode }}"
 
